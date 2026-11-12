@@ -32,6 +32,9 @@ jobs:
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v6
 
+      - name: Check formatting (ktlint)
+        run: ./gradlew spotlessCheck
+
       - name: Assemble debug
         run: ./gradlew assembleDebug
 

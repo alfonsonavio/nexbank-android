@@ -25,4 +25,3 @@ dependencyResolutionManagement {
 
 rootProject.name = "NexBank"
 include(":app")
- 
