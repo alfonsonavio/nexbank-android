@@ -66,6 +66,10 @@ Useful tasks:
 - [ADR 0002 — Architecture and modules](docs/adr/0002-architecture-and-modules.md)
 - [ADR 0003 — Contract-first API](docs/adr/0003-contract-first-api.md)
 
+## Changelog
+
+See [CHANGELOG.md](CHANGELOG.md).
+
 ## License
 
 [MIT](LICENSE)
