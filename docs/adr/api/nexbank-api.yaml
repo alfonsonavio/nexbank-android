@@ -1,0 +1,549 @@
+openapi: 3.1.0
+info:
+  title: NexBank Public API
+  version: 1.0.0
+  description: |
+    Contrato público de NexBank expuesto a través del API Gateway.
+    Es la fuente de verdad compartida entre los microservicios (Spring Boot)
+    y el cliente Android (Retrofit). Ambos lados se ajustan a este fichero;
+    si hay que cambiar algo, se cambia aquí primero.
+
+    Convenciones:
+    - Importes como string decimal (`"1250.40"`) + divisa ISO 4217 → BigDecimal en ambos extremos.
+    - Fechas en ISO 8601 UTC (`2026-11-11T10:15:30Z`); `valueDate` como fecha local (`2026-11-11`).
+    - Identificadores UUID.
+    - El usuario se identifica SIEMPRE por el JWT (claim `userId`), nunca por path o query.
+    - Recursos ajenos devuelven 404 (no 403) para no revelar su existencia.
+    - Errores en formato RFC 9457 Problem Details (`application/problem+json`).
+  contact:
+    name: Alfonso Navío
+    url: https://github.com/alfonsonavio
+
+servers:
+  - url: http://localhost:8080/api/v1
+    description: API Gateway local
+  - url: http://10.0.2.2:8080/api/v1
+    description: API Gateway visto desde el emulador Android
+
+security:
+  - bearerAuth: []
+
+tags:
+  - name: Auth
+    description: auth-service (8081)
+  - name: Users
+    description: user-service (8082)
+  - name: Accounts
+    description: account-service (8083)
+  - name: Transactions
+    description: transaction-service (por crear)
+  - name: Transfers
+    description: transaction-service (por crear)
+
+paths:
+  # ───────────────────────────── AUTH ─────────────────────────────
+  /auth/login:
+    post:
+      tags: [Auth]
+      operationId: login
+      summary: Inicia sesión y obtiene el par de tokens
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/LoginRequest' }
+      responses:
+        '200':
+          description: Credenciales correctas
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TokenPair' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401':
+          description: Credenciales incorrectas (`code` = INVALID_CREDENTIALS)
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+
+  /auth/refresh:
+    post:
+      tags: [Auth]
+      operationId: refreshToken
+      summary: Renueva el access token usando el refresh token (rotación)
+      description: |
+        El refresh token es de un solo uso: la respuesta trae un par nuevo
+        y el anterior queda invalidado. El cliente lo llama desde un
+        OkHttp `Authenticator` al recibir un 401 con `code` = TOKEN_EXPIRED.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/RefreshRequest' }
+      responses:
+        '200':
+          description: Nuevo par de tokens
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TokenPair' }
+        '401':
+          description: Refresh token inválido, caducado o ya usado → forzar login
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+
+  /auth/logout:
+    post:
+      tags: [Auth]
+      operationId: logout
+      summary: Revoca el refresh token actual
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/RefreshRequest' }
+      responses:
+        '204': { description: Sesión cerrada }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  # ───────────────────────────── USERS ─────────────────────────────
+  /users/me:
+    get:
+      tags: [Users]
+      operationId: getMyProfile
+      summary: Perfil del usuario autenticado
+      responses:
+        '200':
+          description: Perfil
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/UserProfile' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  # ───────────────────────────── ACCOUNTS ─────────────────────────────
+  /accounts:
+    get:
+      tags: [Accounts]
+      operationId: getMyAccounts
+      summary: Lista las cuentas del usuario autenticado
+      description: No pagina; un cliente tiene pocas cuentas.
+      responses:
+        '200':
+          description: Cuentas del usuario
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Account' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /accounts/{accountId}:
+    get:
+      tags: [Accounts]
+      operationId: getAccount
+      summary: Detalle de una cuenta propia
+      parameters:
+        - $ref: '#/components/parameters/AccountIdPath'
+      responses:
+        '200':
+          description: Cuenta
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Account' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  # ───────────────────────────── TRANSACTIONS ─────────────────────────────
+  /transactions:
+    get:
+      tags: [Transactions]
+      operationId: getTransactions
+      summary: Movimientos de una cuenta, paginados por cursor
+      description: |
+        Paginación por cursor (keyset): orden descendente por `bookedAt, id`.
+        El cliente pasa el `nextCursor` de la página anterior; si viene `null`
+        no hay más páginas. Encaja directamente con Paging 3 (RemoteMediator)
+        y no se descuadra si entran movimientos nuevos mientras se pagina.
+        El cursor es opaco: el cliente no debe interpretarlo.
+      parameters:
+        - name: accountId
+          in: query
+          required: true
+          schema: { type: string, format: uuid }
+        - name: cursor
+          in: query
+          required: false
+          schema: { type: string }
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer, minimum: 1, maximum: 100, default: 20 }
+        - name: from
+          in: query
+          required: false
+          description: Fecha contable mínima (inclusive)
+          schema: { type: string, format: date }
+        - name: to
+          in: query
+          required: false
+          description: Fecha contable máxima (inclusive)
+          schema: { type: string, format: date }
+        - name: direction
+          in: query
+          required: false
+          schema: { $ref: '#/components/schemas/TransactionDirection' }
+      responses:
+        '200':
+          description: Página de movimientos
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TransactionPage' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /transactions/{transactionId}:
+    get:
+      tags: [Transactions]
+      operationId: getTransaction
+      summary: Detalle de un movimiento
+      parameters:
+        - name: transactionId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: Movimiento
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Transaction' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  # ───────────────────────────── TRANSFERS ─────────────────────────────
+  /transfers:
+    post:
+      tags: [Transfers]
+      operationId: createTransfer
+      summary: Ordena una transferencia
+      description: |
+        Requiere cabecera `Idempotency-Key` (UUID generado por el cliente al
+        pulsar "Confirmar" y guardado hasta recibir respuesta). Repetir la
+        petición con la misma clave y el mismo cuerpo devuelve la transferencia
+        original (200) en vez de crear otra; con distinto cuerpo, 409.
+
+        La transferencia puede quedar en PENDING (procesado asíncrono vía
+        Kafka entre servicios); el cliente consulta `GET /transfers/{id}`.
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/TransferRequest' }
+      responses:
+        '201':
+          description: Transferencia creada
+          headers:
+            Location:
+              schema: { type: string }
+              description: /api/v1/transfers/{transferId}
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Transfer' }
+        '200':
+          description: Reintento idempotente; se devuelve la transferencia ya creada
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Transfer' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: Misma Idempotency-Key con distinto cuerpo (`code` = IDEMPOTENCY_CONFLICT)
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '422':
+          description: |
+            Petición válida pero rechazada por negocio. `code` ∈
+            INSUFFICIENT_FUNDS, ACCOUNT_BLOCKED, SAME_ACCOUNT, LIMIT_EXCEEDED.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+              examples:
+                insufficientFunds:
+                  value:
+                    type: https://api.nexbank.dev/problems/insufficient-funds
+                    title: Saldo insuficiente
+                    status: 422
+                    detail: El saldo disponible no cubre el importe de la transferencia.
+                    code: INSUFFICIENT_FUNDS
+                    traceId: 6f1c2a9e8b7d4c3a
+
+  /transfers/{transferId}:
+    get:
+      tags: [Transfers]
+      operationId: getTransfer
+      summary: Estado y detalle de una transferencia
+      parameters:
+        - name: transferId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: Transferencia
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Transfer' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: Access token emitido por auth-service; incluye el claim `userId`.
+
+  parameters:
+    AccountIdPath:
+      name: accountId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+
+  responses:
+    Unauthorized:
+      description: Token ausente, inválido o caducado (`code` = TOKEN_EXPIRED si solo ha caducado)
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    NotFound:
+      description: El recurso no existe o no pertenece al usuario
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    ValidationError:
+      description: Error de validación de entrada (`code` = VALIDATION_ERROR, con `errors`)
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+
+  schemas:
+    # ── Comunes ──
+    Money:
+      type: object
+      required: [amount, currency]
+      properties:
+        amount:
+          type: string
+          pattern: '^-?\d{1,15}\.\d{2}$'
+          description: Decimal con 2 decimales exactos. Nunca float/double.
+          examples: ['1250.40']
+        currency:
+          type: string
+          pattern: '^[A-Z]{3}$'
+          description: ISO 4217
+          examples: [EUR]
+
+    Problem:
+      type: object
+      description: RFC 9457 + extensiones `code`, `traceId`, `errors`. Spring Boot 3 → ProblemDetail.
+      required: [type, title, status, code]
+      properties:
+        type: { type: string, format: uri }
+        title: { type: string }
+        status: { type: integer }
+        detail: { type: string }
+        instance: { type: string }
+        code:
+          $ref: '#/components/schemas/ErrorCode'
+        traceId:
+          type: string
+          description: Id de traza (Zipkin) para correlacionar con logs
+        errors:
+          type: array
+          items:
+            type: object
+            required: [field, message]
+            properties:
+              field: { type: string }
+              message: { type: string }
+
+    ErrorCode:
+      type: string
+      description: Código estable que el cliente mapea a mensajes de UI. Lista ampliable.
+      enum:
+        - VALIDATION_ERROR
+        - INVALID_CREDENTIALS
+        - TOKEN_EXPIRED
+        - TOKEN_INVALID
+        - RESOURCE_NOT_FOUND
+        - ACCOUNT_BLOCKED
+        - INSUFFICIENT_FUNDS
+        - SAME_ACCOUNT
+        - INVALID_IBAN
+        - LIMIT_EXCEEDED
+        - IDEMPOTENCY_CONFLICT
+        - INTERNAL_ERROR
+
+    # ── Auth / Users ──
+    LoginRequest:
+      type: object
+      required: [email, password]
+      properties:
+        email: { type: string, format: email }
+        password: { type: string, minLength: 8, writeOnly: true }
+
+    RefreshRequest:
+      type: object
+      required: [refreshToken]
+      properties:
+        refreshToken: { type: string }
+
+    TokenPair:
+      type: object
+      required: [accessToken, refreshToken, tokenType, expiresIn]
+      properties:
+        accessToken: { type: string }
+        refreshToken: { type: string }
+        tokenType: { type: string, const: Bearer }
+        expiresIn:
+          type: integer
+          description: Segundos de validez del access token
+
+    UserProfile:
+      type: object
+      required: [id, email, firstName, lastName]
+      properties:
+        id: { type: string, format: uuid }
+        email: { type: string, format: email }
+        firstName: { type: string }
+        lastName: { type: string }
+        phone: { type: [string, 'null'] }
+
+    # ── Accounts ──
+    AccountType:
+      type: string
+      enum: [CHECKING, SAVINGS]
+
+    AccountStatus:
+      type: string
+      enum: [ACTIVE, BLOCKED, CLOSED]
+
+    Account:
+      type: object
+      required: [id, iban, type, status, balance, availableBalance, createdAt]
+      properties:
+        id: { type: string, format: uuid }
+        iban:
+          type: string
+          pattern: '^[A-Z]{2}\d{2}[A-Z0-9]{11,30}$'
+          examples: [ES9121000418450200051332]
+        alias:
+          type: [string, 'null']
+          maxLength: 40
+        type: { $ref: '#/components/schemas/AccountType' }
+        status: { $ref: '#/components/schemas/AccountStatus' }
+        balance:
+          $ref: '#/components/schemas/Money'
+          description: Saldo contable
+        availableBalance:
+          $ref: '#/components/schemas/Money'
+          description: Saldo disponible (contable − retenciones/pendientes)
+        createdAt: { type: string, format: date-time }
+
+    # ── Transactions ──
+    TransactionDirection:
+      type: string
+      enum: [DEBIT, CREDIT]
+
+    TransactionCategory:
+      type: string
+      enum: [TRANSFER_IN, TRANSFER_OUT, CARD_PAYMENT, DIRECT_DEBIT, DEPOSIT, WITHDRAWAL, FEE, INTEREST]
+
+    TransactionStatus:
+      type: string
+      enum: [PENDING, BOOKED]
+
+    Transaction:
+      type: object
+      required: [id, accountId, direction, category, status, amount, description, bookedAt, valueDate]
+      properties:
+        id: { type: string, format: uuid }
+        accountId: { type: string, format: uuid }
+        direction: { $ref: '#/components/schemas/TransactionDirection' }
+        category: { $ref: '#/components/schemas/TransactionCategory' }
+        status: { $ref: '#/components/schemas/TransactionStatus' }
+        amount:
+          $ref: '#/components/schemas/Money'
+          description: Siempre positivo; el signo lo da `direction`
+        balanceAfter:
+          description: Saldo tras el movimiento (null si PENDING)
+          oneOf:
+            - $ref: '#/components/schemas/Money'
+            - type: 'null'
+        description: { type: string, maxLength: 140 }
+        counterpartyName: { type: [string, 'null'] }
+        counterpartyIban: { type: [string, 'null'] }
+        transferId:
+          type: [string, 'null']
+          format: uuid
+          description: Enlaza con /transfers si el movimiento proviene de una transferencia
+        bookedAt: { type: string, format: date-time }
+        valueDate: { type: string, format: date }
+
+    TransactionPage:
+      type: object
+      required: [items, nextCursor]
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/Transaction' }
+        nextCursor:
+          type: [string, 'null']
+          description: null = no hay más páginas
+
+    # ── Transfers ──
+    TransferStatus:
+      type: string
+      enum: [PENDING, COMPLETED, REJECTED]
+
+    TransferRequest:
+      type: object
+      required: [sourceAccountId, destinationIban, beneficiaryName, amount]
+      properties:
+        sourceAccountId: { type: string, format: uuid }
+        destinationIban:
+          type: string
+          pattern: '^[A-Z]{2}\d{2}[A-Z0-9]{11,30}$'
+        beneficiaryName: { type: string, minLength: 1, maxLength: 70 }
+        amount: { $ref: '#/components/schemas/Money' }
+        concept: { type: [string, 'null'], maxLength: 140 }
+
+    Transfer:
+      type: object
+      required: [id, status, sourceAccountId, destinationIban, beneficiaryName, amount, createdAt]
+      properties:
+        id: { type: string, format: uuid }
+        status: { $ref: '#/components/schemas/TransferStatus' }
+        sourceAccountId: { type: string, format: uuid }
+        destinationIban: { type: string }
+        beneficiaryName: { type: string }
+        amount: { $ref: '#/components/schemas/Money' }
+        concept: { type: [string, 'null'] }
+        createdAt: { type: string, format: date-time }
+        executedAt: { type: [string, 'null'], format: date-time }
+        rejectionCode:
+          description: Motivo si status = REJECTED
+          oneOf:
+            - $ref: '#/components/schemas/ErrorCode'
+            - type: 'null'
