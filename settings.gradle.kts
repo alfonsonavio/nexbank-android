@@ -26,3 +26,4 @@ dependencyResolutionManagement {
 rootProject.name = "NexBank"
 include(":app")
 include(":core:model")
+include(":core:designsystem")

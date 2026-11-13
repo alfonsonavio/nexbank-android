@@ -10,7 +10,7 @@ data class NewTransfer(
 ) {
     init {
         require(beneficiaryName.isNotBlank()) { "Beneficiary name must not be blank" }
-        require(beneficiaryName.length <= MAX_BENEFICIARY_NAME_LENGTH) { " Beneficiary name is too long" }
+        require(beneficiaryName.length <= MAX_BENEFICIARY_NAME_LENGTH) { "Beneficiary name is too long" }
         require(concept == null || concept.length <= MAX_CONCEPT_LENGTH) { "Concept is too long" }
         require(!amount.isNegative && !amount.isZero) { "Transfer amount must be positive" }
     }
