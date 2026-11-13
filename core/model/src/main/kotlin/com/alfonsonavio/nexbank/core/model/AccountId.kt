@@ -7,7 +7,7 @@ package com.alfonsonavio.nexbank.core.model
 @JvmInline
 value class AccountId(val value: String) {
     init {
-        require(value.isNotBlank()) { "AcountId must not be blank" }
+        require(value.isNotBlank()) { "AccountId must not be blank" }
     }
 
     override fun toString(): String = value
