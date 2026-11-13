@@ -13,7 +13,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Spotless with ktlint and compose-rules, shared with the IDE through `.editorconfig`.
 - README, MIT license, architecture decision records and the OpenAPI contract.
 - Changelog.
-- - `core:model` module with the `Money` value type.
+- `core:model` module with the `Money` value type.
+- Domain models in `core:model`: `Iban` (with mod-97 validation), `Account`, `Transaction`,
+  `Transfer` with a sealed `TransferStatus`, and `NewTransfer` with the contract's input limits.
 
 ### Changed
 - IDE configuration (`.idea/`) is no longer tracked.
