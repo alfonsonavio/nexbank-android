@@ -17,4 +17,5 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 - IDE configuration (`.idea/`) is no longer tracked.
-- - CI runs unit tests with `./gradlew test`, so pure JVM modules are covered.
+- CI runs unit tests with `./gradlew test`, so pure JVM modules are covered.
+- Enable parallel Gradle sync in Android Studio (`org.gradle.tooling.parallel`).
